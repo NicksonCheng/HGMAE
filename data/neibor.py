@@ -17,7 +17,9 @@ for i in pa:
 
 keys = sorted(a_n.keys())
 a_n = [a_n[i] for i in keys]
-a_n = np.array([np.array(i) for i in a_n])
+for a in a_n:
+    print(len(a))
+a_n = np.array([np.array(i) for i in a_n],dtype=object)
 np.save("nei_p.npy", a_n)
 
 # give some basic statistics about neighbors

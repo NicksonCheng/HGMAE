@@ -11,12 +11,7 @@ from hgmae.models.han import HAN
 
 
 class PreModel(nn.Module):
-    def __init__(
-            self,
-            args,
-            num_metapath: int,
-            focused_feature_dim: int
-    ):
+    def __init__(self, args, num_metapath: int, focused_feature_dim: int):
         super(PreModel, self).__init__()
 
         self.num_metapath = num_metapath
@@ -36,6 +31,7 @@ class PreModel(nn.Module):
         self.decoder_type = args.decoder
         self.loss_fn = args.loss_fn
         self.enc_dec_input_dim = self.focused_feature_dim
+        self.type_num = args.type_num
         assert self.hidden_dim % self.num_heads == 0
         assert self.hidden_dim % self.num_out_heads == 0
 
@@ -128,7 +124,7 @@ class PreModel(nn.Module):
             nn.Linear(self.mps_embedding_dim, self.mps_embedding_dim),
             nn.PReLU(),
             nn.Dropout(self.mp2vec_feat_drop),
-            nn.Linear(self.mps_embedding_dim, self.mps_embedding_dim)
+            nn.Linear(self.mps_embedding_dim, self.mps_embedding_dim),
         )
 
     @property
@@ -140,14 +136,14 @@ class PreModel(nn.Module):
             return float(input_mask_rate)
         except ValueError:
             if "~" in input_mask_rate:  # 0.6~0.8 Uniform sample
-                mask_rate = [float(i) for i in input_mask_rate.split('~')]
+                mask_rate = [float(i) for i in input_mask_rate.split("~")]
                 assert len(mask_rate) == 2
                 if get_min:
                     return mask_rate[0]
                 else:
                     return torch.empty(1).uniform_(mask_rate[0], mask_rate[1]).item()
             elif "," in input_mask_rate:  # 0.6,-0.1,0.4 stepwise increment/decrement
-                mask_rate = [float(i) for i in input_mask_rate.split(',')]
+                mask_rate = [float(i) for i in input_mask_rate.split(",")]
                 assert len(mask_rate) == 3
                 start = mask_rate[0]
                 step = mask_rate[1]
@@ -174,13 +170,14 @@ class PreModel(nn.Module):
     def forward(self, feats, mps, **kwargs):
         # prepare for mp2vec feat pred
         if self.use_mp2vec_feat_pred:
-            mp2vec_feat = feats[0][:, self.focused_feature_dim:]
-            origin_feat = feats[0][:, :self.focused_feature_dim]
+            mp2vec_feat = feats[0][:, self.focused_feature_dim :]
+            origin_feat = feats[0][:, : self.focused_feature_dim]
         else:
             origin_feat = feats[0]
 
         # type-specific attribute restoration
         gs = self.mps_to_gs(mps)
+
         loss, feat_recon, att_mp, enc_out, mask_nodes = self.mask_attr_restoration(origin_feat, gs, kwargs.get("epoch", None))
 
         # mp based edge reconstruction
@@ -205,14 +202,14 @@ class PreModel(nn.Module):
 
         # random masking
         num_mask_nodes = int(mask_rate * num_nodes)
-        mask_nodes = perm[: num_mask_nodes]
+        mask_nodes = perm[:num_mask_nodes]
         keep_nodes = perm[num_mask_nodes:]
 
         perm_mask = torch.randperm(num_mask_nodes, device=x.device)
         num_leave_nodes = int(self._leave_unchanged * num_mask_nodes)
         num_noise_nodes = int(self._replace_rate * num_mask_nodes)
         num_real_mask_nodes = num_mask_nodes - num_leave_nodes - num_noise_nodes
-        token_nodes = mask_nodes[perm_mask[: num_real_mask_nodes]]
+        token_nodes = mask_nodes[perm_mask[:num_real_mask_nodes]]
         noise_nodes = mask_nodes[perm_mask[-num_noise_nodes:]]
         noise_to_be_chosen = torch.randperm(num_nodes, device=x.device)[:num_noise_nodes]
 
@@ -276,7 +273,7 @@ class PreModel(nn.Module):
 
     def get_embeds(self, feats, mps, *varg):
         if self.use_mp2vec_feat_pred:
-            origin_feat = feats[0][:, :self.focused_feature_dim]
+            origin_feat = feats[0][:, : self.focused_feature_dim]
         else:
             origin_feat = feats[0]
         gs = self.mps_to_gs(mps)
@@ -296,15 +293,32 @@ class PreModel(nn.Module):
             gs = []
             for mp in mps:
                 indices = mp._indices()
-                cur_graph = dgl.graph((indices[0], indices[1]))
+                cur_graph = dgl.graph((indices[0], indices[1]), num_nodes=self.type_num[0])
+                cur_graph = dgl.add_self_loop(cur_graph)
                 gs.append(cur_graph)
             return gs
         else:
             return self.__cache_gs
 
 
-def setup_module(m_type, num_metapath, enc_dec, in_dim, num_hidden, out_dim, num_layers, dropout, activation, residual,
-                 norm, nhead, nhead_out, attn_drop, negative_slope=0.2, concat_out=True) -> nn.Module:
+def setup_module(
+    m_type,
+    num_metapath,
+    enc_dec,
+    in_dim,
+    num_hidden,
+    out_dim,
+    num_layers,
+    dropout,
+    activation,
+    residual,
+    norm,
+    nhead,
+    nhead_out,
+    attn_drop,
+    negative_slope=0.2,
+    concat_out=True,
+) -> nn.Module:
     if m_type == "han":
         mod = HAN(
             num_metapath=num_metapath,

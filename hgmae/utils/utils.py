@@ -144,6 +144,7 @@ def metapath2vec_train(args, model, epoch, device):
         model.train()
 
         total_loss = 0
+        print(loader)
         for i, (pos_rw, neg_rw) in enumerate(loader):
             optimizer.zero_grad()
             loss = model.loss(pos_rw.to(device), neg_rw.to(device))

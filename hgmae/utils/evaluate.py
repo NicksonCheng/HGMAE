@@ -8,10 +8,27 @@ from sklearn.metrics import roc_auc_score
 
 from sklearn.cluster import KMeans
 from sklearn.metrics.cluster import normalized_mutual_info_score, adjusted_rand_score
+import torch.nn.functional as F
+from tqdm import tqdm
+
+
+class MLP(nn.Module):
+    def __init__(self, num_dim, num_classes):
+        super(MLP, self).__init__()
+        self.hidden = num_dim * 2
+        self.fc1 = nn.Linear(num_dim, self.hidden)
+        self.relu = nn.ReLU()
+        self.sigmoid = nn.Sigmoid()
+        self.fc2 = nn.Linear(self.hidden, num_classes)
+
+    def forward(self, x):
+        x = self.relu(self.fc1(x))
+        x = self.fc2(x)
+        return F.softmax(x, dim=1)
 
 
 def evaluate_cluster(embeds, y, n_labels, kmeans_random_state):
-    Y_pred = KMeans(n_labels, random_state=kmeans_random_state).fit(embeds).predict(embeds)
+    Y_pred = KMeans(n_labels, random_state=kmeans_random_state, n_init=10).fit(embeds).predict(embeds)
     nmi = normalized_mutual_info_score(y, Y_pred)
     ari = adjusted_rand_score(y, Y_pred)
     return nmi, ari
@@ -34,8 +51,9 @@ def evaluate(embeds, idx_train, idx_val, idx_test, label, nb_classes, device, lr
     macro_f1s_val = []
     auc_score_list = []
 
-    for _ in range(50):
+    for _ in tqdm(range(10)):
         log = LogReg(hid_units, nb_classes)
+        # log = MLP(hid_units, nb_classes)
         opt = torch.optim.Adam(log.parameters(), lr=lr, weight_decay=wd)
         log.to(device)
 
@@ -63,8 +81,8 @@ def evaluate(embeds, idx_train, idx_val, idx_test, label, nb_classes, device, lr
             preds = torch.argmax(logits, dim=1)
 
             val_acc = torch.sum(preds == val_lbls).float() / val_lbls.shape[0]
-            val_f1_macro = f1_score(val_lbls.cpu(), preds.cpu(), average='macro')
-            val_f1_micro = f1_score(val_lbls.cpu(), preds.cpu(), average='micro')
+            val_f1_macro = f1_score(val_lbls.cpu(), preds.cpu(), average="macro")
+            val_f1_micro = f1_score(val_lbls.cpu(), preds.cpu(), average="micro")
 
             val_accs.append(val_acc.item())
             val_macro_f1s.append(val_f1_macro)
@@ -75,8 +93,8 @@ def evaluate(embeds, idx_train, idx_val, idx_test, label, nb_classes, device, lr
             preds = torch.argmax(logits, dim=1)
 
             test_acc = torch.sum(preds == test_lbls).float() / test_lbls.shape[0]
-            test_f1_macro = f1_score(test_lbls.cpu(), preds.cpu(), average='macro')
-            test_f1_micro = f1_score(test_lbls.cpu(), preds.cpu(), average='micro')
+            test_f1_macro = f1_score(test_lbls.cpu(), preds.cpu(), average="macro")
+            test_f1_micro = f1_score(test_lbls.cpu(), preds.cpu(), average="micro")
 
             test_accs.append(test_acc.item())
             test_macro_f1s.append(test_f1_macro)
@@ -95,22 +113,70 @@ def evaluate(embeds, idx_train, idx_val, idx_test, label, nb_classes, device, lr
         # auc
         best_logits = logits_list[max_iter]
         best_proba = softmax(best_logits, dim=1)
-        auc_score = roc_auc_score(y_true=test_lbls.detach().cpu().numpy(),
-                                  y_score=best_proba.detach().cpu().numpy(),
-                                  multi_class='ovr'
-                                  )
+        auc_score = roc_auc_score(y_true=test_lbls.detach().cpu().numpy(), y_score=best_proba.detach().cpu().numpy(), multi_class="ovr")
         auc_score_list.append(auc_score)
 
     if isTest:
-        print("\t[Classification] Macro-F1: [{:.4f}, {:.4f}]  Micro-F1: [{:.4f}, {:.4f}]  auc: [{:.4f}, {:.4f}]"
-              .format(np.mean(macro_f1s),
-                      np.std(macro_f1s),
-                      np.mean(micro_f1s),
-                      np.std(micro_f1s),
-                      np.mean(auc_score_list),
-                      np.std(auc_score_list)
-                      )
-              )
+        print(
+            "\t[Classification] Macro-F1: [{:.4f}, {:.4f}]  Micro-F1: [{:.4f}, {:.4f}]  auc: [{:.4f}, {:.4f}]".format(
+                np.mean(macro_f1s), np.std(macro_f1s), np.mean(micro_f1s), np.std(micro_f1s), np.mean(auc_score_list), np.std(auc_score_list)
+            )
+        )
         return np.mean(macro_f1s), np.mean(micro_f1s), np.mean(auc_score_list)
     else:
         return np.mean(macro_f1s_val), np.mean(macro_f1s)
+
+
+def LGS_node_classification_evaluate(embeds, labels,labeled_indices, multilabel=False):
+    from sklearn.model_selection import StratifiedKFold
+    from sklearn.svm import LinearSVC
+    n_split = 10
+    ## node all nodes has labels
+    labels_dict = labels.squeeze().detach().cpu()
+    enc_feat_dict = embeds[labeled_indices].detach().cpu()
+    print(labels_dict.shape)
+    print(enc_feat_dict.shape)
+    seed = np.random.seed(1)
+    skf = StratifiedKFold(n_splits=n_split, shuffle=True, random_state=seed)
+    accs = []
+    micro_f1s = []
+    macro_f1s = []
+    auc_roc_list = []  ## baseline model's evaluation
+    #print(torch.bincount(labels_dict))
+    for train_index, test_index in tqdm(skf.split(enc_feat_dict, labels_dict), total=n_split):
+        # print(Counter(labels_dict[train_index].tolist()))
+        # print("----------------")
+        # print(Counter(labels_dict[test_index].tolist()))
+        # exit()
+        clf = LinearSVC(random_state=seed, max_iter=3000, dual="auto")
+        clf.fit(enc_feat_dict[train_index], labels_dict[train_index])
+        pred = clf.predict(enc_feat_dict[test_index])
+        # print(pred)
+        # print(labels_dict[test_index])
+        acc = torch.eq(torch.tensor(pred), labels_dict[test_index]).sum().item() / len(pred)
+        pred_score = clf.decision_function(enc_feat_dict[test_index])
+        softmax_score = torch.softmax(torch.from_numpy(pred_score), dim=1).numpy()
+
+        macro_f1s.append(f1_score(labels_dict[test_index], pred, average="macro"))
+        micro_f1s.append(f1_score(labels_dict[test_index], pred, average="micro"))
+
+        auc_roc_list.append(
+            roc_auc_score(
+                y_true=labels_dict[test_index],
+                y_score=softmax_score,
+                multi_class="ovr",
+                average=None if multilabel else "macro",
+            )
+        )
+        print(f"Acc:{acc} Macro:{macro_f1s[-1]}, Micro:{micro_f1s[-1]} AUC_ROC:{auc_roc_list[-1]}")
+    mean = {
+        "auc_roc": np.mean(auc_roc_list),
+        "micro_f1": np.mean(micro_f1s),
+        "macro_f1": np.mean(macro_f1s),
+    }
+    std = {
+        "auc_roc": np.std(auc_roc_list),
+        "micro_f1": np.std(micro_f1s),
+        "macro_f1": np.std(macro_f1s),
+    }
+    return mean, std
